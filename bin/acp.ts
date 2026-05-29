@@ -17,6 +17,7 @@ import { registerSubscriptionCommands } from "../src/commands/subscription";
 import { registerChainCommands } from "../src/commands/chain";
 import { registerEmailCommands } from "../src/commands/email";
 import { registerCardCommands } from "../src/commands/card";
+import { registerTradeCommands } from "../src/commands/trade";
 
 const require = createRequire(import.meta.url);
 
@@ -57,5 +58,6 @@ registerSubscriptionCommands(program);
 registerChainCommands(program);
 registerEmailCommands(program);
 registerCardCommands(program);
+registerTradeCommands(program);
 
 program.parse();
