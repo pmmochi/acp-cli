@@ -16,7 +16,7 @@
 //
 // Spot amount semantics mirror a swap: a BUY (--token-in usdc) spends --amount-in
 // USDC (size derived from price, never overspends); a SELL (--token-out usdc)
-// sells --amount-in coin units.
+// sells --amount-in token units.
 //
 // How signing works: the CLI is a thin signer. Swaps/deposits run through the
 // trading-agent server's /api/trade/plan + /next state machine — the server
@@ -134,7 +134,7 @@ export function registerTradeCommands(program: Command): void {
         "  acp trade --token-in usdc --chain-in 1337 --amount-in 100 --token-out PURR --chain-out 1337  # spot buy\n" +
         "  acp trade --token-in PURR --chain-in 1337 --amount-in 50 --token-out usdc --chain-out 1337   # spot sell\n" +
         "  acp trade --token-in usdc --chain-in 1337 --amount-in 25 --token-out usdc --chain-out 42161  # withdraw\n" +
-        "  acp trade --side long --coin BTC --size 0.01 --leverage 5\n" +
+        "  acp trade --side long --token BTC --size 0.01 --leverage 5\n" +
         "  acp trade status\n"
     )
     // -- Swap / deposit / HL spot / HL withdraw (token-pair shape) --------
@@ -151,9 +151,9 @@ export function registerTradeCommands(program: Command): void {
     .option("--slippage <pct>", "HL market-order slippage as a percent (default 5)", "5")
     // -- Hyperliquid perp (position shape) -------------------------------
     .option("--side <side>", "Perp side: long or short")
-    .option("--coin <symbol>", "Perp coin symbol, e.g. BTC, ETH, SOL")
-    .option("--size <size>", "Perp order size in coin units")
-    .option("--leverage <n>", "Set leverage for this coin before a perp order")
+    .option("--token <symbol>", "Perp token symbol, e.g. BTC, ETH, SOL")
+    .option("--size <size>", "Perp order size in token units")
+    .option("--leverage <n>", "Set leverage for this token before a perp order")
     .option("--isolated", "Use isolated margin when setting leverage", false)
     .option("--reduce-only", "Only reduce an existing perp position", false)
     .action(async (opts, cmd) => {
@@ -220,7 +220,7 @@ type Intent = "perp" | "spot" | "deposit" | "withdraw" | "swap" | "interactive";
 
 function detectIntent(opts: Record<string, unknown>, json: boolean): Intent {
   const side = typeof opts.side === "string" ? opts.side.toLowerCase() : undefined;
-  if (side === "long" || side === "short" || opts.coin !== undefined) return "perp";
+  if (side === "long" || side === "short" || opts.token !== undefined) return "perp";
 
   const hasTokenParams =
     opts.tokenIn !== undefined ||
@@ -465,14 +465,14 @@ async function runHlSpot(opts: Record<string, unknown>, json: boolean): Promise<
 // ---------- Hyperliquid perp (position shape) ----------
 
 async function runPerp(opts: Record<string, unknown>, json: boolean): Promise<void> {
-  if (opts.coin === undefined) {
-    throw new CliError("--coin is required for a perp.", "VALIDATION_ERROR", "e.g. `--coin BTC`.");
+  if (opts.token === undefined) {
+    throw new CliError("--token is required for a perp.", "VALIDATION_ERROR", "e.g. `--token BTC`.");
   }
   if (opts.side === undefined) {
     throw new CliError(
       "--side long|short is required for a perp.",
       "VALIDATION_ERROR",
-      "e.g. `--coin BTC --side long --size 0.01`."
+      "e.g. `--token BTC --side long --size 0.01`."
     );
   }
   if (opts.size === undefined) {
@@ -480,7 +480,7 @@ async function runPerp(opts: Record<string, unknown>, json: boolean): Promise<vo
   }
   const isBuy = parsePerpSide(String(opts.side));
   const { info, exchange } = await createHlClients();
-  const asset = await resolvePerpAsset(info, String(opts.coin));
+  const asset = await resolvePerpAsset(info, String(opts.token));
 
   if (opts.leverage !== undefined) {
     await exchange.updateLeverage({
@@ -609,30 +609,30 @@ async function runInteractive(json: boolean): Promise<void> {
         return;
       }
       case "perp": {
-        const coin = await ask(rl, "Coin (e.g. BTC): ");
+        const token = await ask(rl, "Token (e.g. BTC): ");
         const side = await ask(rl, "Side (long/short): ");
-        const size = await ask(rl, "Size (coin units): ");
+        const size = await ask(rl, "Size (token units): ");
         const price = await ask(rl, "Limit price (blank = market): ");
         const leverage = await ask(rl, "Leverage (blank = leave as-is): ");
         await runPerp(
-          { coin, side, size, price: price || undefined, leverage: leverage || undefined },
+          { token, side, size, price: price || undefined, leverage: leverage || undefined },
           json
         );
         return;
       }
       case "spot": {
         const dir = await ask(rl, "Buy or sell? ");
-        const coin = await ask(rl, "Coin (e.g. PURR): ");
+        const token = await ask(rl, "Token (e.g. PURR): ");
         const buying = dir.trim().toLowerCase().startsWith("b");
         const amountIn = await ask(
           rl,
-          buying ? "USDC to spend: " : `${coin} amount to sell: `
+          buying ? "USDC to spend: " : `${token} amount to sell: `
         );
         const price = await ask(rl, "Limit price (blank = market): ");
         await runHlSpot(
           {
-            tokenIn: buying ? "usdc" : coin,
-            tokenOut: buying ? coin : "usdc",
+            tokenIn: buying ? "usdc" : token,
+            tokenOut: buying ? token : "usdc",
             amountIn,
             price: price || undefined,
           },

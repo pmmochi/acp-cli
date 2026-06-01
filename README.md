@@ -406,7 +406,7 @@ Each event line includes the job ID, chain ID, status, your roles, available act
 | **1337**    | **1337**    | **Spot** order on the Hyperliquid order book |
 | **1337**    | EVM         | **Withdraw** USDC from Hyperliquid           |
 
-Perps are the one exception — a leveraged position isn't a token conversion, so they use `--side long|short` (with `--coin`). Running `acp trade` bare in a terminal opens an interactive picker (humans only).
+Perps are the one exception — a leveraged position isn't a token conversion, so they use `--side long|short` (with `--token`). Running `acp trade` bare in a terminal opens an interactive picker (humans only).
 
 Swaps and deposits are orchestrated by the **trading-agent server** (`/api/trade/plan` + `/next`): the server picks the route (BondingV5 for Virtuals bonding-curve tokens, LiFi for everything else incl. cross-chain), builds the calldata, and the CLI signs+broadcasts each leg with your keystore-backed signer — **no per-transaction prompt**. HL spot/perp/withdraw are EIP-712 actions signed by the same signer and POSTed to HL's API. Private keys never leave the OS keystore.
 
@@ -444,7 +444,7 @@ Bridging USDC to chain `1337` credits your Hyperliquid account (keyed by the sam
 # Spot BUY: spend 100 USDC on PURR (amount-in is the USDC you spend)
 acp trade --token-in usdc --chain-in 1337 --amount-in 100 --token-out PURR --chain-out 1337
 
-# Spot SELL: sell 50 PURR for USDC (amount-in is the coin amount)
+# Spot SELL: sell 50 PURR for USDC (amount-in is the token amount)
 acp trade --token-in PURR --chain-in 1337 --amount-in 50 --token-out usdc --chain-out 1337
 
 # Limit spot order (add --price; otherwise it's a market/IOC order)
@@ -457,13 +457,13 @@ HL spot pairs are USDC-quoted, so exactly one side must be `usdc`.
 
 ```bash
 # Market long 0.01 BTC with 5x leverage
-acp trade --side long --coin BTC --size 0.01 --leverage 5
+acp trade --side long --token BTC --size 0.01 --leverage 5
 
 # Limit short 0.5 ETH at 4000, post-only
-acp trade --side short --coin ETH --size 0.5 --price 4000 --post-only
+acp trade --side short --token ETH --size 0.5 --price 4000 --post-only
 
 # Reduce-only (close part of a position)
-acp trade --side short --coin BTC --size 0.01 --reduce-only
+acp trade --side short --token BTC --size 0.01 --reduce-only
 ```
 
 **Hyperliquid — account & withdraw:**
