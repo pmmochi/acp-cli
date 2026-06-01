@@ -413,12 +413,12 @@ async function runHlSpot(opts: Record<string, unknown>, json: boolean): Promise<
       "Buy: `--token-in usdc --token-out PURR`. Sell: `--token-in PURR --token-out usdc`."
     );
   }
-  // Buy when the output is the coin (spending USDC); sell when the input is the coin.
+  // Buy when the output is the token (spending USDC); sell when the input is the token.
   const isBuy = !outUsdc ? true : false;
-  const coin = isBuy ? tokenOut : tokenIn;
+  const token = isBuy ? tokenOut : tokenIn;
 
   const { info, exchange } = await createHlClients();
-  const asset = await resolveSpotAsset(info, coin);
+  const asset = await resolveSpotAsset(info, token);
 
   const isMarket = opts.price === undefined;
   const orderPrice = isMarket
@@ -432,7 +432,7 @@ async function runHlSpot(opts: Record<string, unknown>, json: boolean): Promise<
       )
     : formatPrice(Number(opts.price), asset.szDecimals, true);
 
-  // Size: a sell spends coin units directly; a buy spends USDC, so size is the
+  // Size: a sell spends token units directly; a buy spends USDC, so size is the
   // USDC amount divided by the order price (so the order never overspends).
   const amountIn = Number(opts.amountIn);
   if (!Number.isFinite(amountIn) || amountIn <= 0) {
@@ -537,14 +537,14 @@ async function runStatus(json: boolean): Promise<void> {
   ]);
 
   const positions = perp.assetPositions.map((p) => ({
-    coin: p.position.coin,
+    token: p.position.coin,
     size: p.position.szi,
     entryPx: p.position.entryPx,
     unrealizedPnl: p.position.unrealizedPnl,
     leverage: p.position.leverage,
   }));
   const balances = spot.balances.map((b) => ({
-    coin: b.coin,
+    token: b.coin,
     total: b.total,
     hold: b.hold,
   }));
