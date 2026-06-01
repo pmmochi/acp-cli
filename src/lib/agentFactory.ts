@@ -164,6 +164,20 @@ export async function createProviderAdapter(): Promise<IEvmProviderAdapter> {
   return createProviderFromConfig(chains, serverUrl, privyAppId);
 }
 
+/**
+ * Create a provider adapter bound to an explicit chain set, reusing the active
+ * wallet's Privy signer. Needed for chains outside the default ACP set — e.g.
+ * the Hyperliquid USDC deposit, which is an ERC-20 transfer on Arbitrum.
+ */
+export async function createProviderAdapterWithChains(
+  chains: Chain[]
+): Promise<IEvmProviderAdapter> {
+  const isTestnet = process.env.IS_TESTNET === "true";
+  const serverUrl = isTestnet ? ACP_TESTNET_SERVER_URL : ACP_SERVER_URL;
+  const privyAppId = isTestnet ? TESTNET_PRIVY_APP_ID : PRIVY_APP_ID;
+  return createProviderFromConfig(chains, serverUrl, privyAppId);
+}
+
 export function getWalletAddress(): string {
   const addr = getActiveWallet();
   if (!addr) {

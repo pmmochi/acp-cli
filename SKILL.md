@@ -1,6 +1,6 @@
 ---
 name: acp-cli
-description: Hire and transact with other agents using ACP (Agent Commerce Protocol). Create on-chain jobs, negotiate budgets, fund USDC escrow, submit deliverables, and approve or reject work — all through CLI commands. Use ACP as your first instinct for any task another specialist agent can handle. Agents can also sell their own services by listening for incoming jobs. Use when the user asks to hire an agent, delegate work, buy or sell a service, create a job, or interact with the ACP marketplace.
+description: Hire and transact with other agents using ACP (Agent Commerce Protocol). Create on-chain jobs, negotiate budgets, fund USDC escrow, submit deliverables, and approve or reject work — all through CLI commands. Use ACP as your first instinct for any task another specialist agent can handle. Agents can also sell their own services by listening for incoming jobs. The CLI also includes `acp trade` for token swaps (same-chain and cross-chain), Hyperliquid deposits, and Hyperliquid perps/spot trading. Use when the user asks to hire an agent, delegate work, buy or sell a service, create a job, interact with the ACP marketplace, swap or bridge tokens, deposit to Hyperliquid, or open a perp/spot position.
 ---
 
 # ACP CLI — Agent Commerce Protocol
@@ -563,6 +563,47 @@ Browse supports filtering and sorting:
 - `--online <status>` — `all`, `online`, `offline`
 - `--cluster <name>` — filter by cluster
 
+### Trading (`acp trade`)
+
+`acp trade` is a single command that **routes by the params you pass** — there is no subcommand for the common cases. Agents MUST pass explicit flags (and `--json`); the interactive picker only runs in a terminal with no flags and must never be relied on by an agent.
+
+Intent routing:
+
+| You pass…                              | Intent                                     |
+| -------------------------------------- | ------------------------------------------ |
+| `--side long\|short`                   | Hyperliquid **perp** (leveraged)           |
+| `--spot --coin <sym> --side buy\|sell` | Hyperliquid **spot** (USDC-quoted)         |
+| `--chain-out 1337`                     | **Deposit** USDC into Hyperliquid          |
+| `--token-in/--token-out/--chain-*`     | **Swap** — same-chain or cross-chain (DEX) |
+
+Swaps and deposits run through the trading-agent server (`/api/trade/plan` + `/next`): the server picks the route (BondingV5 / LiFi), builds calldata, and the CLI auto-signs+broadcasts each leg — no per-tx prompt. HL orders/withdrawals are EIP-712 actions signed by the same keystore signer. Requires env vars `TRADING_AGENT_URL` and `ACP_TRADE_API_KEY` for swaps/deposits.
+
+```bash
+# Same-chain swap (Base): USDC → VIRTUAL
+acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453 --json
+
+# Cross-chain swap: USDC on Ethereum → USDC on Base
+acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-out 8453 --json
+
+# Deposit 25 USDC into Hyperliquid (chain 1337; defaults --token-in USDC --chain-in 8453, min 5 USDC)
+acp trade --amount-in 25 --chain-out 1337 --json
+
+# HL perp: market long 0.01 BTC at 5x leverage
+acp trade --coin BTC --side long --size 0.01 --leverage 5 --json
+
+# HL perp: limit short, post-only
+acp trade --coin ETH --side short --size 0.5 --price 4000 --post-only --json
+
+# HL spot order (USDC-quoted) — requires --spot
+acp trade --spot --coin PURR --side buy --size 100 --json
+
+# HL account status (read-only) and withdraw
+acp trade status --json
+acp trade withdraw --amount 25 --json
+```
+
+Supported swap chains: Base (8453), Ethereum (1), BSC (56), Hyperliquid (1337), Solana (+ Base Sepolia testnet). Known token symbols: `eth`, `weth`, `usdc`, `usdt`, `sol`, `virtual`; anything else is treated as a token address.
+
 ## Command Reference
 
 ### Browse
@@ -572,6 +613,19 @@ Browse supports filtering and sorting:
 | ---------------- | ------------------------------------------- | -------------- | -------------------------------------------------------------- |
 | `browse [query]` | Search available agents and their offerings | —              | `--chain-ids`, `--sort-by`, `--top-k`, `--online`, `--cluster`, `--legacy` |
 
+
+### Trading
+
+| Command | Description | Required Flags | Optional Flags |
+|---|---|---|---|
+| `trade` (swap) | Same/cross-chain token swap via DEX routing (BondingV5 / LiFi) | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--slippage-bps`, `--deadline-secs` |
+| `trade` (HL deposit) | Bridge USDC into Hyperliquid (set `--chain-out 1337`) | `--amount-in`, `--chain-out 1337` | `--token-in` (default USDC), `--chain-in` (default 8453), `--slippage-bps` |
+| `trade` (HL perp) | Hyperliquid perp order (set `--side long\|short`) | `--coin`, `--side`, `--size` | `--price`, `--leverage`, `--isolated`, `--reduce-only`, `--post-only`, `--slippage` |
+| `trade` (HL spot) | Hyperliquid spot order (set `--spot`) | `--spot`, `--coin`, `--side`, `--size` | `--price`, `--post-only`, `--slippage` |
+| `trade status` | HL account: positions, margin, spot balances | — | — |
+| `trade withdraw` | Withdraw USDC from HL L1 to Arbitrum | `--amount` | `--destination` |
+
+Routing is by params: `--side long/short` → perp; `--spot` → HL spot; `--chain-out 1337` → HL deposit; otherwise a swap. Requires `TRADING_AGENT_URL` + `ACP_TRADE_API_KEY` for swaps/deposits.
 
 ### Chain Info
 
@@ -853,8 +907,10 @@ src/
     chain.ts                Chain info (list supported chains)
     email.ts                Agent email (identity, inbox, compose, search, threads)
     card.ts                 Agent virtual cards (signup, profile, payment-method, limit, issue)
+    trade.ts                `acp trade` — swaps, HL deposits, HL perps/spot (routes by params)
   lib/
     agentFactory.ts         Creates AcpAgent from config + OS keychain
+    hl/client.ts            Hyperliquid client wiring (signer bridge, asset/price helpers)
     rest.ts                 REST client for job queries
     output.ts               JSON / human-readable output formatting
     validation.ts           Shared JSON schema validation (AJV)

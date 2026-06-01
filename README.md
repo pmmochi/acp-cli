@@ -395,6 +395,83 @@ acp events drain --file events.jsonl --limit 10
 
 Each event line includes the job ID, chain ID, status, your roles, available actions, and full event details — designed to be piped into an agent orchestration loop.
 
+### Trading (`acp trade`)
+
+`acp trade` is one command for moving and trading value. It **routes by the params you pass** — there's no subcommand to memorize for the common cases:
+
+| You pass…                              | Intent                                         |
+| -------------------------------------- | ---------------------------------------------- |
+| `--side long\|short`                   | Hyperliquid **perp** order (leveraged)         |
+| `--spot --coin <sym> --side buy\|sell` | Hyperliquid **spot** order (USDC-quoted)       |
+| `--chain-out 1337`                     | **Deposit** USDC into Hyperliquid              |
+| `--token-in/--token-out/--chain-*`     | **Swap** — same-chain or cross-chain (DEX)     |
+| (no flags, in a terminal)              | Interactive picker (humans only)               |
+
+Swaps and deposits are orchestrated by the **trading-agent server** (`/api/trade/plan` + `/next`): the server picks the route (BondingV5 for Virtuals bonding-curve tokens, LiFi for everything else incl. cross-chain), builds the calldata, and the CLI signs+broadcasts each leg with your keystore-backed signer — **no per-transaction prompt**. Hyperliquid orders/withdrawals are EIP-712 actions signed by the same signer and POSTed to HL's API. Private keys never leave the OS keystore.
+
+Set two env vars for swaps/deposits:
+
+```bash
+export TRADING_AGENT_URL=https://your-trading-agent.up.railway.app
+export ACP_TRADE_API_KEY=<key>   # ask the trading-agent operator
+```
+
+**Swaps (same-chain and cross-chain):**
+
+```bash
+# Same-chain swap on Base: USDC → VIRTUAL
+acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453
+
+# Cross-chain swap: USDC on Ethereum → USDC on Base
+acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-out 8453
+
+# Buy a Virtuals bonding-curve token by address (auto-routed via BondingV5)
+acp trade --token-in virtual --chain-in 8453 --amount-in 10 --token-out 0xTokenAddress --chain-out 8453
+```
+
+Supported chains: **Base (8453), Ethereum (1), BSC (56), Hyperliquid (1337), Solana** (+ Base Sepolia testnet). Token symbols `eth`, `weth`, `usdc`, `usdt`, `sol`, `virtual` are resolved automatically; anything else is taken as a token address.
+
+**Hyperliquid — deposit (a cross-chain swap into HL):**
+
+```bash
+# Deposit 25 USDC into Hyperliquid from Base (defaults: --token-in USDC --chain-in 8453)
+acp trade --amount-in 25 --chain-out 1337
+
+# Deposit from another chain / token (bridged + converted to USDC on HL)
+acp trade --token-in usdc --chain-in 1 --amount-in 100 --chain-out 1337
+```
+
+Bridging USDC to chain `1337` credits your Hyperliquid account (keyed by the same EVM address). Minimum deposit is **5 USDC** (bridge fees are roughly flat, so small deposits lose a large %).
+
+**Hyperliquid — perps & spot:**
+
+```bash
+# Market long 0.01 BTC with 5x leverage
+acp trade --coin BTC --side long --size 0.01 --leverage 5
+
+# Limit short 0.5 ETH at 4000, post-only
+acp trade --coin ETH --side short --size 0.5 --price 4000 --post-only
+
+# Reduce-only (close part of a position)
+acp trade --coin BTC --side short --size 0.01 --reduce-only
+
+# HL spot order (USDC-quoted) — note the --spot flag
+acp trade --spot --coin PURR --side buy --size 100
+```
+
+**Hyperliquid — account & withdraw:**
+
+```bash
+# Show positions, margin, and spot balances
+acp trade status
+
+# Withdraw USDC from HL L1 to Arbitrum (defaults destination to your wallet)
+acp trade withdraw --amount 25
+acp trade withdraw --amount 25 --destination 0xRecipient
+```
+
+> For agents: always pass explicit flags (and `--json`). The interactive picker only runs in a terminal with no flags — agents must never rely on it.
+
 ### Agent Email
 
 Each agent can provision a dedicated email identity, send and receive email,
@@ -562,9 +639,11 @@ src/
     chain.ts                Chain info (list supported chains)
     email.ts                Agent email (identity, inbox, compose, search, threads)
     card.ts                 Agent virtual cards (signup, profile, payment-method, limit, issue)
+    trade.ts                `acp trade` — swaps, HL deposits, HL perps/spot (routes by params)
   lib/
     config.ts               Load/save config.json at ~/.config/acp/ (override with ACP_CONFIG_PATH)
     agentFactory.ts         Create ACP agent instance from config + OS keychain
+    hl/client.ts            Hyperliquid client wiring (signer bridge, asset/price helpers)
     signerKeychain.ts       OS keychain storage for P256 private keys
     acpCliSigner.ts         Signer utilities
     prompt.ts               Interactive CLI helpers (prompt, select, table)
