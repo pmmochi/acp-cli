@@ -1,21 +1,27 @@
-// `acp trade` — one command for moving and trading value, routed by the
-// params you pass. No subcommand to memorize: the flags decide the intent.
+// `acp trade` — one command for moving and trading value. The chains you pass
+// decide the venue: Hyperliquid is chain 1337, so swaps, HL deposits, HL spot,
+// and HL withdrawals all share the same --token-in/--chain-in/--amount-in/
+// --token-out/--chain-out shape. Only perps are different (a leveraged position,
+// not a token conversion), so they use --side long|short.
 //
 // ── Intent routing (for LLM agents and humans) ──────────────────────────────
-//   • `--side long|short`              → Hyperliquid PERP order (leveraged)
-//   • `--spot --coin <sym> --side …`   → Hyperliquid SPOT order (USDC-quoted)
-//   • `--chain-out 1337`               → DEPOSIT into Hyperliquid (USDC bridge)
-//   • `--token-in/--token-out/--chain-*`→ cross-chain / same-chain SWAP (DEX)
-//   • no flags in a terminal           → interactive picker (humans only)
+//   --side long|short                         → Hyperliquid PERP (leveraged)
+//   --chain-in 1337  --chain-out 1337         → Hyperliquid SPOT (order book)
+//   --chain-in <evm> --chain-out 1337         → DEPOSIT USDC into Hyperliquid
+//   --chain-in 1337  --chain-out <evm>        → WITHDRAW USDC from Hyperliquid
+//   --chain-in <evm> --chain-out <evm>        → SWAP (DEX: BondingV5 / LiFi)
+//   (no flags, in a terminal)                 → interactive picker (humans only)
 //
-// Plus two explicit sub-actions that aren't "place a trade":
-//   • `acp trade status`               → HL account: positions, margin, balances
-//   • `acp trade withdraw`             → withdraw USDC from HL L1 to Arbitrum
+// `acp trade status` shows HL positions/margin/balances (read-only).
 //
-// How signing works: the CLI is a thin signer. Swaps/deposits are driven by the
+// Spot amount semantics mirror a swap: a BUY (--token-in usdc) spends --amount-in
+// USDC (size derived from price, never overspends); a SELL (--token-out usdc)
+// sells --amount-in coin units.
+//
+// How signing works: the CLI is a thin signer. Swaps/deposits run through the
 // trading-agent server's /api/trade/plan + /next state machine — the server
 // builds calldata, the CLI signs+broadcasts each leg with the keystore-backed
-// signer (no human prompt). HL orders/withdrawals are EIP-712 actions signed by
+// signer (no human prompt). HL spot/perp/withdraw are EIP-712 actions signed by
 // the same signer and POSTed to HL's API. Private keys never leave the keystore.
 //
 // Env (swap + deposit only):
@@ -45,7 +51,7 @@ import {
 } from "../lib/hl/client";
 
 // LiFi's chain id for Hyperliquid Core (the perps/spot collateral ledger).
-// A swap whose destination is this chain is a Hyperliquid deposit.
+// Any leg whose chain is this is "on Hyperliquid".
 const HL_CHAIN_ID = 1337;
 // Default source chain for a deposit's USDC.
 const DEFAULT_FROM_CHAIN = 8453; // Base
@@ -108,59 +114,65 @@ export function registerTradeCommands(program: Command): void {
   const trade = program
     .command("trade")
     .description(
-      "Trade value: cross-chain/spot swaps, Hyperliquid deposits, and HL " +
-        "perps/spot. The command routes by the params you pass — see `acp trade --help`."
+      "Trade value: same/cross-chain swaps, and — via Hyperliquid (chain 1337) — " +
+        "deposits, spot orders, withdrawals, and perps. Routes by the chains/params " +
+        "you pass. See `acp trade --help`."
     )
     .addHelpText(
       "after",
-      "\nIntent is chosen from your flags:\n" +
-        "  --side long|short             → HL perp (leveraged)\n" +
-        "  --spot --coin X --side buy    → HL spot order\n" +
-        "  --chain-out 1337              → deposit USDC into Hyperliquid\n" +
-        "  --token-in/--token-out/...    → cross-chain or same-chain swap\n" +
-        "  (no flags, in a terminal)     → interactive picker\n" +
+      "\nHyperliquid is chain 1337. The chains decide the venue:\n" +
+        "  --chain-in <evm>  --chain-out <evm>   → DEX swap (same/cross-chain)\n" +
+        "  --chain-in <evm>  --chain-out 1337    → deposit USDC into Hyperliquid\n" +
+        "  --chain-in 1337   --chain-out 1337    → Hyperliquid spot order\n" +
+        "  --chain-in 1337   --chain-out <evm>   → withdraw USDC from Hyperliquid\n" +
+        "  --side long|short                     → Hyperliquid perp (leveraged)\n" +
+        "  (no flags, in a terminal)             → interactive picker\n" +
         "\nExamples:\n" +
         "  acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453\n" +
         "  acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-out 8453\n" +
-        "  acp trade --amount-in 25 --chain-out 1337            # deposit 25 USDC into Hyperliquid\n" +
-        "  acp trade --coin BTC --side long --size 0.01 --leverage 5\n" +
-        "  acp trade --spot --coin PURR --side buy --size 100\n" +
-        "  acp trade status\n" +
-        "  acp trade withdraw --amount 25\n"
+        "  acp trade --token-in usdc --chain-in 8453 --amount-in 25 --token-out usdc --chain-out 1337   # deposit\n" +
+        "  acp trade --token-in usdc --chain-in 1337 --amount-in 100 --token-out PURR --chain-out 1337  # spot buy\n" +
+        "  acp trade --token-in PURR --chain-in 1337 --amount-in 50 --token-out usdc --chain-out 1337   # spot sell\n" +
+        "  acp trade --token-in usdc --chain-in 1337 --amount-in 25 --token-out usdc --chain-out 42161  # withdraw\n" +
+        "  acp trade --side long --coin BTC --size 0.01 --leverage 5\n" +
+        "  acp trade status\n"
     )
-    // -- Swap / deposit options ------------------------------------------
+    // -- Swap / deposit / HL spot / HL withdraw (token-pair shape) --------
     .option("--token-in <token>", "Input token (address or symbol)")
-    .option("--chain-in <id>", "Input chain ID")
-    .option("--amount-in <amount>", "Input amount in human units")
+    .option("--chain-in <id>", "Input chain ID (1337 = Hyperliquid)")
+    .option("--amount-in <amount>", "Input amount in human units (USDC for an HL spot buy)")
     .option("--token-out <token>", "Output token (address or symbol)")
-    .option("--chain-out <id>", "Output chain ID (1337 = deposit into Hyperliquid)")
+    .option("--chain-out <id>", "Output chain ID (1337 = Hyperliquid)")
     .option("--recipient <addr>", "Output recipient (default: active wallet)")
     .option("--slippage-bps <bps>", "Swap/bridge slippage in basis points")
     .option("--deadline-secs <secs>", "BondingV5 deadline in seconds")
-    // -- Hyperliquid order options ---------------------------------------
-    .option("--coin <symbol>", "HL coin symbol, e.g. BTC, ETH, SOL, PURR")
-    .option("--side <side>", "long/short (perp) or buy/sell (spot)")
-    .option("--size <size>", "Order size in coin units")
-    .option("--price <price>", "Limit price (omit for a market order)")
+    .option("--price <price>", "HL spot limit price (omit for a market order)")
+    .option("--post-only", "HL post-only (Alo) limit order; rejects if it crosses", false)
+    .option("--slippage <pct>", "HL market-order slippage as a percent (default 5)", "5")
+    // -- Hyperliquid perp (position shape) -------------------------------
+    .option("--side <side>", "Perp side: long or short")
+    .option("--coin <symbol>", "Perp coin symbol, e.g. BTC, ETH, SOL")
+    .option("--size <size>", "Perp order size in coin units")
     .option("--leverage <n>", "Set leverage for this coin before a perp order")
     .option("--isolated", "Use isolated margin when setting leverage", false)
     .option("--reduce-only", "Only reduce an existing perp position", false)
-    .option("--post-only", "Post-only (Alo) limit order; rejects if it crosses", false)
-    .option("--spot", "Route a buy/sell as an HL spot order (not a DEX swap)", false)
-    .option("--slippage <pct>", "HL market-order slippage as a percent (default 5)", "5")
     .action(async (opts, cmd) => {
       const json = isJson(cmd);
       try {
         const intent = detectIntent(opts, json);
         switch (intent) {
           case "perp":
-            await runHlOrder(opts, false, json);
+            await runPerp(opts, json);
             return;
           case "spot":
-            await runHlOrder(opts, true, json);
+            await runHlSpot(opts, json);
             return;
+          case "deposit":
           case "swap":
             await runSwap(opts, json);
+            return;
+          case "withdraw":
+            await runWithdraw(String(opts.amountIn), opts.recipient as string | undefined, json);
             return;
           case "interactive":
             await runInteractive(json);
@@ -184,7 +196,9 @@ export function registerTradeCommands(program: Command): void {
       }
     });
 
-  // ── withdraw ────────────────────────────────────────────────────────────────
+  // ── withdraw ──────────────────────────────────────────────────────────────
+  // Convenience form. (Equivalent to: --token-in usdc --chain-in 1337
+  // --amount-in <n> --token-out usdc --chain-out <evm>.)
   trade
     .command("withdraw")
     .description("Withdraw USDC from Hyperliquid L1 to Arbitrum (signed action)")
@@ -193,7 +207,7 @@ export function registerTradeCommands(program: Command): void {
     .action(async (opts, cmd) => {
       const json = isJson(cmd);
       try {
-        await runWithdraw(opts.amount, opts.destination, json);
+        await runWithdraw(String(opts.amount), opts.destination, json);
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
       }
@@ -202,28 +216,26 @@ export function registerTradeCommands(program: Command): void {
 
 // ---------- Intent routing ----------
 
-type Intent = "perp" | "spot" | "swap" | "interactive";
+type Intent = "perp" | "spot" | "deposit" | "withdraw" | "swap" | "interactive";
 
 function detectIntent(opts: Record<string, unknown>, json: boolean): Intent {
   const side = typeof opts.side === "string" ? opts.side.toLowerCase() : undefined;
-  const isLeveraged = side === "long" || side === "short";
-  if (isLeveraged) return "perp";
-  if (opts.spot) return "spot";
+  if (side === "long" || side === "short" || opts.coin !== undefined) return "perp";
 
-  const hasSwapParams =
+  const hasTokenParams =
     opts.tokenIn !== undefined ||
     opts.tokenOut !== undefined ||
+    opts.chainIn !== undefined ||
     opts.chainOut !== undefined ||
     opts.amountIn !== undefined;
-  if (hasSwapParams) return "swap";
 
-  // A coin with a buy/sell side but no --spot is ambiguous (HL spot vs swap).
-  if (opts.coin !== undefined) {
-    throw new CliError(
-      "Ambiguous order: pass --side long|short for a perp, or add --spot for an HL spot order.",
-      "VALIDATION_ERROR",
-      "e.g. `acp trade --coin BTC --side long --size 0.01` or `acp trade --spot --coin PURR --side buy --size 100`."
-    );
+  if (hasTokenParams) {
+    const inHL = opts.chainIn !== undefined && Number(opts.chainIn) === HL_CHAIN_ID;
+    const outHL = opts.chainOut !== undefined && Number(opts.chainOut) === HL_CHAIN_ID;
+    if (inHL && outHL) return "spot";
+    if (inHL) return "withdraw";
+    if (outHL) return "deposit";
+    return "swap";
   }
 
   if (!json && isTTY()) return "interactive";
@@ -231,7 +243,7 @@ function detectIntent(opts: Record<string, unknown>, json: boolean): Intent {
   throw new CliError(
     "No trade intent in the flags provided.",
     "VALIDATION_ERROR",
-    "Run `acp trade --help` for the flag→intent routing and examples."
+    "Run `acp trade --help` for the chain→venue routing and examples."
   );
 }
 
@@ -257,7 +269,6 @@ async function runSwap(opts: Record<string, unknown>, json: boolean): Promise<vo
         ? DEFAULT_FROM_CHAIN
         : undefined;
 
-  // Validate required swap params (after applying deposit defaults).
   const missing: string[] = [];
   if (!tokenIn) missing.push("--token-in");
   if (chainIn === undefined) missing.push("--chain-in");
@@ -308,9 +319,7 @@ async function runSwap(opts: Record<string, unknown>, json: boolean): Promise<vo
     progress(
       json,
       `Trade ${plan.tradeId.slice(0, 8)}` +
-        (plan.direction && plan.route
-          ? ` (${plan.direction} via ${plan.route})`
-          : "")
+        (plan.direction && plan.route ? ` (${plan.direction} via ${plan.route})` : "")
     );
   }
   const result = await runTradeLoop(url, apiKey, provider, plan, json);
@@ -379,30 +388,101 @@ async function runTradeLoop(
   }
 }
 
-// ---------- Hyperliquid orders (perp + spot) ----------
+// ---------- Hyperliquid spot (token-pair shape on chain 1337) ----------
 
-async function runHlOrder(
-  opts: Record<string, unknown>,
-  isSpot: boolean,
-  json: boolean
-): Promise<void> {
-  if (opts.coin === undefined) {
+function isUsdcSymbol(token: string): boolean {
+  return token.trim().toLowerCase() === "usdc";
+}
+
+async function runHlSpot(opts: Record<string, unknown>, json: boolean): Promise<void> {
+  const tokenIn = opts.tokenIn !== undefined ? String(opts.tokenIn) : undefined;
+  const tokenOut = opts.tokenOut !== undefined ? String(opts.tokenOut) : undefined;
+  if (!tokenIn || !tokenOut || opts.amountIn === undefined) {
     throw new CliError(
-      "--coin is required for a Hyperliquid order.",
+      "HL spot needs --token-in, --token-out, and --amount-in (both chains 1337).",
       "VALIDATION_ERROR",
-      "e.g. `--coin BTC` (perp) or `--coin PURR --spot` (spot)."
+      "e.g. `acp trade --token-in usdc --chain-in 1337 --amount-in 100 --token-out PURR --chain-out 1337`."
+    );
+  }
+  const inUsdc = isUsdcSymbol(tokenIn);
+  const outUsdc = isUsdcSymbol(tokenOut);
+  if (inUsdc === outUsdc) {
+    throw new CliError(
+      "HL spot pairs are USDC-quoted: exactly one of --token-in / --token-out must be USDC.",
+      "VALIDATION_ERROR",
+      "Buy: `--token-in usdc --token-out PURR`. Sell: `--token-in PURR --token-out usdc`."
+    );
+  }
+  // Buy when the output is the coin (spending USDC); sell when the input is the coin.
+  const isBuy = !outUsdc ? true : false;
+  const coin = isBuy ? tokenOut : tokenIn;
+
+  const { info, exchange } = await createHlClients();
+  const asset = await resolveSpotAsset(info, coin);
+
+  const isMarket = opts.price === undefined;
+  const orderPrice = isMarket
+    ? await marketPrice(
+        info,
+        asset.name,
+        isBuy,
+        asset.szDecimals,
+        true,
+        parseSlippage(String(opts.slippage ?? "5"))
+      )
+    : formatPrice(Number(opts.price), asset.szDecimals, true);
+
+  // Size: a sell spends coin units directly; a buy spends USDC, so size is the
+  // USDC amount divided by the order price (so the order never overspends).
+  const amountIn = Number(opts.amountIn);
+  if (!Number.isFinite(amountIn) || amountIn <= 0) {
+    throw new CliError(`Invalid --amount-in: ${opts.amountIn}`, "VALIDATION_ERROR");
+  }
+  const sizeNum = isBuy ? amountIn / Number(orderPrice) : amountIn;
+  const size = formatSize(sizeNum, asset.szDecimals);
+
+  progress(
+    json,
+    `${isMarket ? "Market" : "Limit"} ${isBuy ? "buy" : "sell"} ${size} ${asset.name} @ ${orderPrice}`
+  );
+
+  const res = await exchange.order({
+    orders: [
+      {
+        a: asset.assetIndex,
+        b: isBuy,
+        p: orderPrice,
+        s: size,
+        r: false,
+        t: { limit: { tif: isMarket ? "Ioc" : opts.postOnly ? "Alo" : "Gtc" } },
+      },
+    ],
+    grouping: "na",
+  });
+  outputResult(json, summarizeOrder(res));
+}
+
+// ---------- Hyperliquid perp (position shape) ----------
+
+async function runPerp(opts: Record<string, unknown>, json: boolean): Promise<void> {
+  if (opts.coin === undefined) {
+    throw new CliError("--coin is required for a perp.", "VALIDATION_ERROR", "e.g. `--coin BTC`.");
+  }
+  if (opts.side === undefined) {
+    throw new CliError(
+      "--side long|short is required for a perp.",
+      "VALIDATION_ERROR",
+      "e.g. `--coin BTC --side long --size 0.01`."
     );
   }
   if (opts.size === undefined) {
-    throw new CliError("--size is required for a Hyperliquid order.", "VALIDATION_ERROR");
+    throw new CliError("--size is required for a perp.", "VALIDATION_ERROR");
   }
-  const isBuy = parseSide(String(opts.side ?? ""));
+  const isBuy = parsePerpSide(String(opts.side));
   const { info, exchange } = await createHlClients();
-  const asset = isSpot
-    ? await resolveSpotAsset(info, String(opts.coin))
-    : await resolvePerpAsset(info, String(opts.coin));
+  const asset = await resolvePerpAsset(info, String(opts.coin));
 
-  if (!isSpot && opts.leverage !== undefined) {
+  if (opts.leverage !== undefined) {
     await exchange.updateLeverage({
       asset: asset.assetIndex,
       isCross: !opts.isolated,
@@ -419,10 +499,10 @@ async function runHlOrder(
         asset.name,
         isBuy,
         asset.szDecimals,
-        isSpot,
+        false,
         parseSlippage(String(opts.slippage ?? "5"))
       )
-    : formatPrice(Number(opts.price), asset.szDecimals, isSpot);
+    : formatPrice(Number(opts.price), asset.szDecimals, false);
 
   progress(
     json,
@@ -436,7 +516,7 @@ async function runHlOrder(
         b: isBuy,
         p: price,
         s: size,
-        r: !isSpot && Boolean(opts.reduceOnly),
+        r: Boolean(opts.reduceOnly),
         t: { limit: { tif: isMarket ? "Ioc" : opts.postOnly ? "Alo" : "Gtc" } },
       },
     ],
@@ -444,6 +524,8 @@ async function runHlOrder(
   });
   outputResult(json, summarizeOrder(res));
 }
+
+// ---------- Hyperliquid account ----------
 
 async function runStatus(json: boolean): Promise<void> {
   // Read-only: needs the wallet address, not the signer.
@@ -482,6 +564,13 @@ async function runWithdraw(
   destination: string | undefined,
   json: boolean
 ): Promise<void> {
+  if (amount === undefined || amount === "undefined" || amount === "") {
+    throw new CliError(
+      "--amount-in is required to withdraw from Hyperliquid.",
+      "VALIDATION_ERROR",
+      "e.g. `acp trade --token-in usdc --chain-in 1337 --amount-in 25 --token-out usdc --chain-out 42161`."
+    );
+  }
   const { exchange, address } = await createHlClients();
   const dest = (destination ?? address) as Address;
   progress(json, `Withdrawing ${amount} USDC → ${dest}`);
@@ -492,7 +581,7 @@ async function runWithdraw(
 // ---------- Interactive picker (humans only) ----------
 
 interface PickerAction {
-  key: "swap" | "deposit" | "perp" | "spot" | "status" | "withdraw";
+  key: "swap" | "deposit" | "spot" | "perp" | "status" | "withdraw";
   label: string;
 }
 
@@ -500,16 +589,12 @@ async function runInteractive(json: boolean): Promise<void> {
   const actions: PickerAction[] = [
     { key: "swap", label: "Swap tokens (same-chain or cross-chain)" },
     { key: "deposit", label: "Deposit USDC into Hyperliquid" },
-    { key: "perp", label: "Open a Hyperliquid perp (long/short)" },
-    { key: "spot", label: "Place a Hyperliquid spot order" },
+    { key: "spot", label: "Hyperliquid spot order" },
+    { key: "perp", label: "Hyperliquid perp (long/short)" },
     { key: "status", label: "Check Hyperliquid account status" },
     { key: "withdraw", label: "Withdraw USDC from Hyperliquid" },
   ];
-  const choice = await selectOption(
-    "What would you like to do?",
-    actions,
-    (a) => a.label
-  );
+  const choice = await selectOption("What would you like to do?", actions, (a) => a.label);
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -518,23 +603,39 @@ async function runInteractive(json: boolean): Promise<void> {
         await runStatus(json);
         return;
       case "withdraw": {
-        const amount = await ask(rl, "USDC amount to withdraw: ");
-        const destination = await ask(rl, "Destination (blank = your wallet): ");
-        await runWithdraw(amount, destination || undefined, json);
+        const amountIn = await ask(rl, "USDC amount to withdraw: ");
+        const recipient = await ask(rl, "Destination (blank = your wallet): ");
+        await runWithdraw(amountIn, recipient || undefined, json);
         return;
       }
-      case "perp":
-      case "spot": {
-        const coin = await ask(rl, "Coin symbol (e.g. BTC, PURR): ");
-        const side = await ask(
-          rl,
-          choice.key === "perp" ? "Side (long/short): " : "Side (buy/sell): "
-        );
-        const size = await ask(rl, "Size (in coin units): ");
+      case "perp": {
+        const coin = await ask(rl, "Coin (e.g. BTC): ");
+        const side = await ask(rl, "Side (long/short): ");
+        const size = await ask(rl, "Size (coin units): ");
         const price = await ask(rl, "Limit price (blank = market): ");
-        await runHlOrder(
-          { coin, side, size, price: price || undefined },
-          choice.key === "spot",
+        const leverage = await ask(rl, "Leverage (blank = leave as-is): ");
+        await runPerp(
+          { coin, side, size, price: price || undefined, leverage: leverage || undefined },
+          json
+        );
+        return;
+      }
+      case "spot": {
+        const dir = await ask(rl, "Buy or sell? ");
+        const coin = await ask(rl, "Coin (e.g. PURR): ");
+        const buying = dir.trim().toLowerCase().startsWith("b");
+        const amountIn = await ask(
+          rl,
+          buying ? "USDC to spend: " : `${coin} amount to sell: `
+        );
+        const price = await ask(rl, "Limit price (blank = market): ");
+        await runHlSpot(
+          {
+            tokenIn: buying ? "usdc" : coin,
+            tokenOut: buying ? coin : "usdc",
+            amountIn,
+            price: price || undefined,
+          },
           json
         );
         return;
@@ -613,14 +714,14 @@ function requireEnv(name: string): string {
   return v;
 }
 
-function parseSide(side: string): boolean {
+function parsePerpSide(side: string): boolean {
   const s = side.toLowerCase();
-  if (s === "buy" || s === "long" || s === "b") return true;
-  if (s === "sell" || s === "short" || s === "s") return false;
+  if (s === "long" || s === "buy" || s === "b") return true;
+  if (s === "short" || s === "sell" || s === "s") return false;
   throw new CliError(
     `Invalid --side: ${side || "(empty)"}`,
     "VALIDATION_ERROR",
-    "Use long/short for a perp, or buy/sell for spot."
+    "Use long or short for a perp."
   );
 }
 

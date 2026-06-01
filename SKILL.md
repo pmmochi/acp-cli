@@ -565,18 +565,21 @@ Browse supports filtering and sorting:
 
 ### Trading (`acp trade`)
 
-`acp trade` is a single command that **routes by the params you pass** — there is no subcommand for the common cases. Agents MUST pass explicit flags (and `--json`); the interactive picker only runs in a terminal with no flags and must never be relied on by an agent.
+`acp trade` is a single command. **Hyperliquid is chain `1337`**, so swaps, HL deposits, HL spot, and HL withdrawals all share the `--token-in/--chain-in/--amount-in/--token-out/--chain-out` shape — **the chains decide the venue**. Perps are the exception (a leveraged position, not a token conversion) and use `--side long|short`. Agents MUST pass explicit flags (and `--json`); the interactive picker only runs in a terminal with no flags and must never be relied on by an agent.
 
-Intent routing:
+Intent routing (chain `1337` = Hyperliquid):
 
-| You pass…                              | Intent                                     |
-| -------------------------------------- | ------------------------------------------ |
-| `--side long\|short`                   | Hyperliquid **perp** (leveraged)           |
-| `--spot --coin <sym> --side buy\|sell` | Hyperliquid **spot** (USDC-quoted)         |
-| `--chain-out 1337`                     | **Deposit** USDC into Hyperliquid          |
-| `--token-in/--token-out/--chain-*`     | **Swap** — same-chain or cross-chain (DEX) |
+| chain-in | chain-out | Intent                                     |
+| -------- | --------- | ------------------------------------------ |
+| EVM      | EVM       | **Swap** — same-chain or cross-chain (DEX) |
+| EVM      | **1337**  | **Deposit** USDC into Hyperliquid          |
+| **1337** | **1337**  | **Spot** order on the HL order book        |
+| **1337** | EVM       | **Withdraw** USDC from Hyperliquid         |
+| —        | —         | `--side long\|short` → **perp** (leveraged) |
 
-Swaps and deposits run through the trading-agent server (`/api/trade/plan` + `/next`): the server picks the route (BondingV5 / LiFi), builds calldata, and the CLI auto-signs+broadcasts each leg — no per-tx prompt. HL orders/withdrawals are EIP-712 actions signed by the same keystore signer. Requires env vars `TRADING_AGENT_URL` and `ACP_TRADE_API_KEY` for swaps/deposits.
+Swaps and deposits run through the trading-agent server (`/api/trade/plan` + `/next`): the server picks the route (BondingV5 / LiFi), builds calldata, and the CLI auto-signs+broadcasts each leg — no per-tx prompt. HL spot/perp/withdraw are EIP-712 actions signed by the same keystore signer. Requires env vars `TRADING_AGENT_URL` and `ACP_TRADE_API_KEY` for swaps/deposits.
+
+**Spot amount semantics** mirror a swap: a BUY (`--token-in usdc`) spends `--amount-in` USDC (size derived from price, never overspends); a SELL (`--token-out usdc`) sells `--amount-in` coin units. HL spot pairs are USDC-quoted, so exactly one side must be `usdc`.
 
 ```bash
 # Same-chain swap (Base): USDC → VIRTUAL
@@ -585,17 +588,20 @@ acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --c
 # Cross-chain swap: USDC on Ethereum → USDC on Base
 acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-out 8453 --json
 
-# Deposit 25 USDC into Hyperliquid (chain 1337; defaults --token-in USDC --chain-in 8453, min 5 USDC)
-acp trade --amount-in 25 --chain-out 1337 --json
+# Deposit 25 USDC into Hyperliquid (chain-out 1337; min 5 USDC)
+acp trade --token-in usdc --chain-in 8453 --amount-in 25 --token-out usdc --chain-out 1337 --json
+
+# HL spot BUY: spend 100 USDC on PURR (both chains 1337)
+acp trade --token-in usdc --chain-in 1337 --amount-in 100 --token-out PURR --chain-out 1337 --json
+
+# HL spot SELL: sell 50 PURR for USDC
+acp trade --token-in PURR --chain-in 1337 --amount-in 50 --token-out usdc --chain-out 1337 --json
 
 # HL perp: market long 0.01 BTC at 5x leverage
-acp trade --coin BTC --side long --size 0.01 --leverage 5 --json
+acp trade --side long --coin BTC --size 0.01 --leverage 5 --json
 
 # HL perp: limit short, post-only
-acp trade --coin ETH --side short --size 0.5 --price 4000 --post-only --json
-
-# HL spot order (USDC-quoted) — requires --spot
-acp trade --spot --coin PURR --side buy --size 100 --json
+acp trade --side short --coin ETH --size 0.5 --price 4000 --post-only --json
 
 # HL account status (read-only) and withdraw
 acp trade status --json
@@ -618,14 +624,15 @@ Supported swap chains: Base (8453), Ethereum (1), BSC (56), Hyperliquid (1337), 
 
 | Command | Description | Required Flags | Optional Flags |
 |---|---|---|---|
-| `trade` (swap) | Same/cross-chain token swap via DEX routing (BondingV5 / LiFi) | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--slippage-bps`, `--deadline-secs` |
-| `trade` (HL deposit) | Bridge USDC into Hyperliquid (set `--chain-out 1337`) | `--amount-in`, `--chain-out 1337` | `--token-in` (default USDC), `--chain-in` (default 8453), `--slippage-bps` |
-| `trade` (HL perp) | Hyperliquid perp order (set `--side long\|short`) | `--coin`, `--side`, `--size` | `--price`, `--leverage`, `--isolated`, `--reduce-only`, `--post-only`, `--slippage` |
-| `trade` (HL spot) | Hyperliquid spot order (set `--spot`) | `--spot`, `--coin`, `--side`, `--size` | `--price`, `--post-only`, `--slippage` |
+| `trade` (swap) | Same/cross-chain token swap via DEX routing (BondingV5 / LiFi); both chains EVM | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--slippage-bps`, `--deadline-secs` |
+| `trade` (HL deposit) | Bridge USDC into Hyperliquid (`--chain-out 1337`, source chain EVM) | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out 1337` | `--slippage-bps` |
+| `trade` (HL spot) | Spot order on the HL order book (`--chain-in 1337 --chain-out 1337`; one side USDC) | `--token-in`, `--chain-in 1337`, `--amount-in`, `--token-out`, `--chain-out 1337` | `--price`, `--post-only`, `--slippage` |
+| `trade` (HL withdraw) | Withdraw USDC from HL (`--chain-in 1337`, dest chain EVM) | `--token-in`, `--chain-in 1337`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient` |
+| `trade` (HL perp) | Hyperliquid perp order | `--side long\|short`, `--coin`, `--size` | `--price`, `--leverage`, `--isolated`, `--reduce-only`, `--post-only`, `--slippage` |
 | `trade status` | HL account: positions, margin, spot balances | — | — |
-| `trade withdraw` | Withdraw USDC from HL L1 to Arbitrum | `--amount` | `--destination` |
+| `trade withdraw` | Withdraw USDC from HL L1 to Arbitrum (convenience form) | `--amount` | `--destination` |
 
-Routing is by params: `--side long/short` → perp; `--spot` → HL spot; `--chain-out 1337` → HL deposit; otherwise a swap. Requires `TRADING_AGENT_URL` + `ACP_TRADE_API_KEY` for swaps/deposits.
+Routing: chain `1337` = Hyperliquid. `--side long/short` → perp; `chain-in 1337 && chain-out 1337` → HL spot; `chain-out 1337` → deposit; `chain-in 1337` → withdraw; otherwise a DEX swap. Requires `TRADING_AGENT_URL` + `ACP_TRADE_API_KEY` for swaps/deposits.
 
 ### Chain Info
 
